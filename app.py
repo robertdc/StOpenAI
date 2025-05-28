@@ -1,136 +1,248 @@
 import streamlit as st
+from openai import OpenAI
+import time
 import os
-import asyncio
-from agents import Agent, Runner, WebSearchTool, FileSearchTool
 from dotenv import load_dotenv
-
-# Load environment variables
 load_dotenv(override=True)
 
-# Ensure your OpenAI key is available from .env file
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-vector_store_id = os.environ["vector_store_id"]
+# Page config
+st.set_page_config(
+    page_title="Break This Agent Challenge",
+    page_icon="🔧",
+    layout="wide"
+)
 
-# Initialize session state for chat history if it doesn't exist
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# Title and intro
+st.title("🔧 Break This Agent Challenge")
+st.markdown("**Try to confuse these AI agents and see how debugging makes them better!**")
 
-# Initialize search tool preferences if they don't exist
-if "use_web_search" not in st.session_state:
-    st.session_state.use_web_search = True
-if "use_file_search" not in st.session_state:
-    st.session_state.use_file_search = True
-
-# Function to create agent with selected tools
-def create_research_assistant():
-    tools = []
-    
-    if st.session_state.use_web_search:
-        tools.append(WebSearchTool())
-        
-    if st.session_state.use_file_search:
-        tools.append(FileSearchTool(
-            max_num_results=3,
-            vector_store_ids=[vector_store_id],
-        ))
-    
-    return Agent(
-        name="Research Assistant",
-        instructions="""You are a research assistant who searches the web and responds to questions based on the documents provided to you. 
-        
-        Always cite your sources when responding to questions. Maintain the conversation context and refer to previous exchanges when appropriate.
-        If you don't have enough information to answer a question, say so and suggest what additional information might help.
-        
-        Format your responses in a clear, readable manner using markdown formatting when appropriate.
-        """,
-        tools=tools,
-    )
-
-# Async wrapper for running the agent with memory
-async def get_research_response(question, history):
-    # Create agent with current tool selections
-    research_assistant = create_research_assistant()
-    
-    # Combine history and current question to provide context
-    context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
-    prompt = f"Context of our conversation:\n{context}\n\nCurrent question: {question}"
-    
-    result = await Runner.run(research_assistant, prompt)
-    return result.final_output
-
-# Streamlit UI
-st.set_page_config(page_title="Research Assistant", layout="wide")
-st.title("🔍 Research Assistant")
-st.write("Ask me anything, and I'll search for information to help answer your questions.")
-
-# Sidebar controls for search tool selection
-st.sidebar.title("Search Settings")
-
-# Tool selection toggles
-st.sidebar.subheader("Select Search Sources")
-web_search = st.sidebar.checkbox("Web Search", value=st.session_state.use_web_search, key="web_search_toggle")
-file_search = st.sidebar.checkbox("Vector Store Search", value=st.session_state.use_file_search, key="file_search_toggle")
-
-# Update session state when toggles change
-if web_search != st.session_state.use_web_search:
-    st.session_state.use_web_search = web_search
-    
-if file_search != st.session_state.use_file_search:
-    st.session_state.use_file_search = file_search
-
-# Validate that at least one search source is selected
-if not st.session_state.use_web_search and not st.session_state.use_file_search:
-    st.sidebar.warning("Please select at least one search source")
-
-# Conversation controls
-st.sidebar.subheader("Conversation")
-if st.sidebar.button("Clear Conversation"):
-    st.session_state.messages = []
-    st.experimental_rerun()
-
-# Display some helpful examples
-with st.sidebar.expander("Example Questions"):
+with st.expander("ℹ️ How This Demo Works"):
     st.markdown("""
-    - What are the key findings in my vector store documents?
-    - Find the latest research on AI Agents.
-    - What are the best recipes for making cake.
-    - Summarize the information about "TOPIC" from my documents.
+    **The Challenge:** Try the same tricky inputs on both agents and compare their responses!
+    
+    **Left Agent (Buggy):** Poorly designed with weak prompting and no error handling
+    **Right Agent (Improved):** Properly debugged with clear instructions and graceful error handling
+    
+    **Try these tricky inputs:**
+    - Nonsensical requests: "Help me with my purple resume that tastes like Tuesday"
+    - Vague commands: "Make it better"
+    - Empty messages
+    - All caps panic: "HELP ME NOW URGENT!!!"
+    - Impossible requests: "Help me become a unicorn trainer"
+    
+    Each agent has a 10-message limit to demonstrate debugging principles. 
     """)
 
-# Footer
-st.sidebar.markdown("---")
-st.sidebar.markdown("🐙 Made by the Lonely Octopus Team")
+# Initialize OpenAI client
+try:
+    # Initialize OpenAI client
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+except Exception as e:
+    st.error("❌ OpenAI API key not found. Please configure your secrets.")
+    st.stop()
 
-# Display chat history
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# System prompts for each agent
+BUGGY_SYSTEM_PROMPT = """You are a resume helper. Help with resumes."""
 
-# User input
-user_question = st.chat_input("Ask your research question")
+IMPROVED_SYSTEM_PROMPT = """You are a helpful and professional Resume Helper AI. Your role is to assist users with resume-related tasks.
 
-if user_question:
-    # Check if at least one search source is selected
-    if not st.session_state.use_web_search and not st.session_state.use_file_search:
-        st.error("Please select at least one search source in the sidebar")
-    else:
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": user_question})
+IMPORTANT GUIDELINES:
+1. If a user's request is confusing, unclear, or nonsensical, politely acknowledge the confusion and ask for clarification
+2. If a user gives a vague request like "make it better", ask them to be more specific about what they want to improve
+3. If a user asks about impossible or unrealistic career goals, be helpful but redirect them to realistic alternatives
+4. If a user sends an empty or very short message, provide helpful examples of what you can assist with
+5. Always maintain a friendly, professional tone even when handling unusual requests
+6. Provide specific examples and actionable advice when possible
+
+Remember: It's better to ask for clarification than to make assumptions about what the user wants."""
+
+# Challenge buttons
+st.markdown("### 🎯 Quick Challenge Inputs:")
+col1, col2, col3, col4, col5 = st.columns(5)
+
+challenge_inputs = [
+    "Help me with my purple resume that tastes like Tuesday",
+    "Make it better", 
+    "HELP ME NOW URGENT!!!",
+    "Can you help me become a unicorn trainer?",
+    ""  # Empty message
+]
+
+if col1.button("🟣 Nonsensical", help=challenge_inputs[0]):
+    st.session_state.auto_send_message = challenge_inputs[0]
+if col2.button("❓ Vague", help=challenge_inputs[1]):
+    st.session_state.auto_send_message = challenge_inputs[1]
+if col3.button("😱 Panic", help=challenge_inputs[2]):
+    st.session_state.auto_send_message = challenge_inputs[2]
+if col4.button("🦄 Impossible", help=challenge_inputs[3]):
+    st.session_state.auto_send_message = challenge_inputs[3]
+if col5.button("⭕ Empty Message", help="Send an empty message"):
+    st.session_state.auto_send_message = challenge_inputs[4]
+
+# Show which message will be sent and trigger rerun
+if 'auto_send_message' in st.session_state and 'showing_auto_message' not in st.session_state:
+    st.info(f"🚀 **Sending to both agents:** '{st.session_state.auto_send_message}'" if st.session_state.auto_send_message else "🚀 **Sending empty message to both agents**")
+    st.markdown("*This message will be automatically sent to both agents for comparison*")
+    st.session_state.showing_auto_message = True
+    time.sleep(0.1)  # Brief pause for user to see the message
+    st.rerun()
+
+# Create two columns for side-by-side chat
+left_col, right_col = st.columns(2)
+
+# Initialize session state for both agents
+for agent in ['buggy', 'improved']:
+    if f"{agent}_messages" not in st.session_state:
+        st.session_state[f"{agent}_messages"] = []
+    if f"{agent}_max_messages" not in st.session_state:
+        st.session_state[f"{agent}_max_messages"] = 20  # 10 rounds of conversation
+
+def create_chat_interface(agent_type, system_prompt, column):
+    """Create a chat interface for one agent"""
+    
+    with column:
+        # Agent header
+        if agent_type == 'buggy':
+            st.markdown("### 🐛 Buggy Agent (Before Debugging)")
+            st.markdown("*Poorly designed with weak prompting*")
+        else:
+            st.markdown("### ✅ Improved Agent (After Debugging)")  
+            st.markdown("*Properly debugged with error handling*")
         
-        # Display user message
-        with st.chat_message("user"):
-            st.markdown(user_question)
+        # Display chat messages
+        messages_key = f"{agent_type}_messages"
+        max_messages_key = f"{agent_type}_max_messages"
         
-        # Display assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("Researching..."):
-                response_placeholder = st.empty()
+        # Chat container
+        chat_container = st.container()
+        
+        with chat_container:
+            for message in st.session_state[messages_key]:
+                with st.chat_message(message["role"]):
+                    # Display empty messages clearly
+                    content = message["content"] if message["content"] else "(empty message)"
+                    st.markdown(content)
+        
+        # Check if max messages reached
+        if len(st.session_state[messages_key]) >= st.session_state[max_messages_key]:
+            st.info("💬 Maximum message limit reached for this agent!")
+        else:
+            # Check for auto-send message
+            prompt = None
+            if 'auto_send_message' in st.session_state:
+                if f"auto_sent_{agent_type}" not in st.session_state:
+                    prompt = st.session_state.auto_send_message
+                    st.session_state[f"auto_sent_{agent_type}"] = True
+                    
+                    # Clean up after both agents have received the message
+                    if all(f"auto_sent_{a}" in st.session_state for a in ['buggy', 'improved']):
+                        del st.session_state.auto_send_message
+                        if 'showing_auto_message' in st.session_state:
+                            del st.session_state.showing_auto_message
+                        for key in list(st.session_state.keys()):
+                            if key.startswith("auto_sent_"):
+                                del st.session_state[key]
+            
+            # Regular chat input (only if no auto-send message)
+            if prompt is None:
+                prompt = st.chat_input(f"Try to break the {agent_type} agent!", key=f"{agent_type}_input")
+            
+            # Handle empty message case
+            if prompt is not None:  # This includes empty strings from auto-send
+                # Add user message (show as "(empty message)" if empty)
+                display_prompt = prompt if prompt else "(empty message)"
+                st.session_state[messages_key].append({"role": "user", "content": prompt})
                 
-                # Get response from agent
-                response = asyncio.run(get_research_response(user_question, st.session_state.messages))
+                # Prepare messages for API call
+                api_messages = [{"role": "system", "content": system_prompt}]
+                api_messages.extend([
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state[messages_key]
+                ])
                 
-                # Update response placeholder
-                response_placeholder.markdown(response)
+                # Display user message
+                with st.chat_message("user"):
+                    st.markdown(display_prompt)
+                
+                # Get AI response
+                with st.chat_message("assistant"):
+                    try:
+                        with st.spinner("Thinking..."):
+                            stream = client.chat.completions.create(
+                                model="gpt-3.5-turbo",
+                                messages=api_messages,
+                                stream=True,
+                                temperature=0.7 if agent_type == 'buggy' else 0.3,
+                                max_tokens=300
+                            )
+                            response = st.write_stream(stream)
+                            
+                        st.session_state[messages_key].append(
+                            {"role": "assistant", "content": response}
+                        )
+                    except Exception as e:
+                        st.session_state[max_messages_key] = len(st.session_state[messages_key])
+                        rate_limit_message = f"Sorry, I can't respond right now. Too many people are using this demo!"
+                        st.error(rate_limit_message)
+                        st.session_state[messages_key].append(
+                            {"role": "assistant", "content": rate_limit_message}
+                        )
+                        st.rerun()
         
-        # Add assistant response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        # Clear chat button
+        if st.button(f"🗑️ Clear {agent_type.title()} Chat", key=f"clear_{agent_type}"):
+            st.session_state[messages_key] = []
+            st.session_state[f"{agent_type}_max_messages"] = 20
+            st.rerun()
+
+# Create both chat interfaces
+create_chat_interface('buggy', BUGGY_SYSTEM_PROMPT, left_col)
+create_chat_interface('improved', IMPROVED_SYSTEM_PROMPT, right_col)
+
+# Add debugging insights at the bottom
+st.markdown("---")
+st.markdown("### 🔍 What Did You Notice?")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("""
+    **🐛 Common Problems with the Buggy Agent:**
+    - Makes assumptions about unclear requests
+    - Doesn't ask for clarification when confused
+    - May give irrelevant or unhelpful responses
+    - Doesn't handle edge cases gracefully
+    """)
+
+with col2:
+    st.markdown("""
+    **✅ How the Improved Agent Handles Issues:**
+    - Acknowledges confusion and asks for clarification
+    - Provides helpful examples when requests are vague
+    - Maintains professional tone even with weird inputs
+    - Gracefully redirects impossible requests
+    """)
+
+st.markdown("""
+### 🛠️ Key Debugging Principles Demonstrated:
+1. **Clear System Prompts**: The improved agent has detailed instructions on how to handle edge cases
+2. **Graceful Error Handling**: When confused, ask for clarification instead of guessing
+3. **Input Validation**: Handle empty messages, unusual formatting, and nonsensical requests appropriately
+4. **Helpful Guidance**: Provide examples and suggestions to guide users toward successful interactions
+5. **Consistent Tone**: Maintain helpfulness and professionalism even when handling errors
+
+**💡 The Goal**: Your AI doesn't need to handle every possible input perfectly, but it should fail gracefully and help users get back on track!
+""")
+
+# Optional: Add some stats
+if st.session_state.get('buggy_messages') or st.session_state.get('improved_messages'):
+    st.markdown("---")
+    st.markdown("### 📊 Demo Stats")
+    buggy_count = len(st.session_state.get('buggy_messages', []))
+    improved_count = len(st.session_state.get('improved_messages', []))
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Buggy Agent Messages", buggy_count, delta=None)
+    with col2:
+        st.metric("Improved Agent Messages", improved_count, delta=None)
